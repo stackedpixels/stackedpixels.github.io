@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wave Interference Simulation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            border: 1px solid #000;
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .slider-container {
+            margin: 10px 0;
+        }
+        .slider-container label {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Wave Interference Simulation</h1>
+    <canvas id="waveCanvas" width="600" height="600"></canvas>
+    <div class="controls">
+        <div class="slider-container">
+            <label for="wavelengthSlider">Wavelength:</label>
+            <input type="range" id="wavelengthSlider" min="0.1" max="5.0" step="0.1" value="1.0">
+        </div>
+        <div class="slider-container">
+            <label for="amplitudeSlider">Amplitude:</label>
+            <input type="range" id="amplitudeSlider" min="0.1" max="3.0" step="0.1" value="1.0">
+        </div>
+        <button id="resetButton">Reset</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+        const wavelengthSlider = document.getElementById('wavelengthSlider');
+        const amplitudeSlider = document.getElementById('amplitudeSlider');
+        const resetButton = document.getElementById('resetButton');
+
+        let wavelength = parseFloat(wavelengthSlider.value);
+        let amplitude = parseFloat(amplitudeSlider.value);
+        const waveSpeed = 2.0;
+        let sources = [];
+        let draggingSource = null;
+        let time = 0.0;
+
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+        const xRange = [-20, 20];
+        const yRange = [-20, 20];
+        const gridSize = 400; // Reduced grid size for better performance
+        const xStep = (xRange[1] - xRange[0]) / gridSize;
+        const yStep = (yRange[1] - yRange[0]) / gridSize;
+
+        // Offscreen canvas for rendering
+        const offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = gridSize;
+        offscreenCanvas.height = gridSize;
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+
+        function waveAmplitude(x, y, source, creationTime) {
+            const dx = x - source[0];
+            const dy = y - source[1];
+            const r = Math.sqrt(dx * dx + dy * dy);
+            const travelTime = r / waveSpeed;
+            if (time >= creationTime + travelTime) {
+                return amplitude * Math.sin(2 * Math.PI * ((time - creationTime - travelTime) / wavelength)) / (r + 1e-10);
+            }
+            return 0.0;
+        }
+
+        function updatePlot() {
+            const imageData = offscreenCtx.createImageData(gridSize, gridSize);
+            const data = imageData.data;
+
+            for (let i = 0; i < gridSize; i++) {
+                for (let j = 0; j < gridSize; j++) {
+                    const x = xRange[0] + i * xStep;
+                    const y = yRange[0] + j * yStep;
+                    let totalWave = 0.0;
+                    for (const [source, creationTime] of sources) {
+                        totalWave += waveAmplitude(x, y, source, creationTime);
+                    }
+                    const color = Math.floor(128 + 127 * totalWave);
+                    const index = (j * gridSize + i) * 4;
+                    data[index] = color;
+                    data[index + 1] = color;
+                    data[index + 2] = color;
+                    data[index + 3] = 255;
+                }
+            }
+
+            offscreenCtx.putImageData(imageData, 0, 0);
+
+            // Draw the offscreen canvas onto the main canvas
+            ctx.drawImage(offscreenCanvas, 0, 0, canvasWidth, canvasHeight);
+
+            // Draw the point sources
+            ctx.fillStyle = 'red';
+            for (const [source, _] of sources) {
+                const x = ((source[0] - xRange[0]) / (xRange[1] - xRange[0])) * canvasWidth;
+                const y = ((source[1] - yRange[0]) / (yRange[1] - yRange[0])) * canvasHeight;
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        }
+
+        function onMouseDown(event) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            const x = xRange[0] + (mouseX / canvasWidth) * (xRange[1] - xRange[0]);
+            const y = yRange[0] + (mouseY / canvasHeight) * (yRange[1] - yRange[0]);
+
+            for (let i = 0; i < sources.length; i++) {
+                const [source, _] = sources[i];
+                const dx = x - source[0];
+                const dy = y - source[1];
+                if (Math.sqrt(dx * dx + dy * dy) < 0.5) {
+                    draggingSource = i;
+                    break;
+                }
+            }
+
+            if (draggingSource === null) {
+                sources.push([[x, y], time]);
+                draggingSource = sources.length - 1;
+            }
+
+            updatePlot();
+        }
+
+        function onMouseMove(event) {
+            if (draggingSource !== null) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = event.clientX - rect.left;
+                const mouseY = event.clientY - rect.top;
+                const x = xRange[0] + (mouseX / canvasWidth) * (xRange[1] - xRange[0]);
+                const y = yRange[0] + (mouseY / canvasHeight) * (yRange[1] - yRange[0]);
+                sources[draggingSource][0] = [x, y];
+                updatePlot();
+            }
+        }
+
+        function onMouseUp() {
+            draggingSource = null;
+        }
+
+        function animate() {
+            time += 0.05;
+            updatePlot();
+            requestAnimationFrame(animate);
+        }
+
+        wavelengthSlider.addEventListener('input', () => {
+            wavelength = parseFloat(wavelengthSlider.value);
+        });
+
+        amplitudeSlider.addEventListener('input', () => {
+            amplitude = parseFloat(amplitudeSlider.value);
+        });
+
+        resetButton.addEventListener('click', () => {
+            sources = [];
+            wavelength = 1.0;
+            amplitude = 1.0;
+            time = 0.0;
+            wavelengthSlider.value = wavelength;
+            amplitudeSlider.value = amplitude;
+            updatePlot();
+        });
+
+        canvas.addEventListener('mousedown', onMouseDown);
+        canvas.addEventListener('mousemove', onMouseMove);
+        canvas.addEventListener('mouseup', onMouseUp);
+
+        animate();
+    </script>
+</body>
+</html>

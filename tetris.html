@@ -352,7 +352,24 @@
 
       function rotateCurrentPieceAnimated() {
         if (!currentPiece) return;
-        const newCoords = rotateCoords(currentPiece.coords);
+        let newCoords;
+        if (currentPiece.name === 'I') {
+          // Custom rotation for I piece
+          newCoords = currentPiece.coords.map(([x, y]) => {
+            // Shift so the pivot (1.5, 0.5) becomes the origin.
+            let relX = x - 1.5;
+            let relY = y - 0.5;
+            // Apply rotation: (x, y) -> (y, -x)
+            let rX = relY;
+            let rY = -relX;
+            // Shift back by adding the pivot
+            return [rX + 1.5, rY + 0.5];
+          });
+          // Round to the nearest integer to keep the grid alignment
+          newCoords = newCoords.map(([x, y]) => [Math.round(x), Math.round(y)]);
+        } else {
+          newCoords = rotateCoords(currentPiece.coords);
+        }
         if (isValidPosition(currentPiece, 0, 0, newCoords)) {
           startAnimation(currentPiece, currentPiece.x, currentPiece.y, newCoords);
         }

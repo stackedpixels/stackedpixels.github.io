@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tetris Enhanced Modern</title>
+  <style>
+    /* Use PT Mono (make sure it’s installed or load it locally) */
+    body {
+      margin: 0;
+      padding: 20px; /* Top (and overall) padding to prevent collisions */
+      background: #333;
+      color: #eee;
+      font-family: 'PT Mono', monospace;
+      display: flex;
+      justify-content: center;
+    }
+    /* Container holds the sidebar and play area */
+    #container {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+      flex-direction: row-reverse; /* Sidebar moves to the right */
+    }
+    /* Sidebar for controls and previews */
+    #sidebar {
+      width: 200px;
+      background: #444;
+      padding: 20px;
+      border-radius: 5px;
+    }
+    #sidebar button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #555;
+      border: none;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+    #sidebar button:hover {
+      background: #777;
+    }
+    #sidebar ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+    /* Play area container */
+    #main {
+      position: relative;
+    }
+    /* Main game canvas */
+    #gameCanvas {
+      background: #222;
+      border: 2px solid #555;
+      box-shadow: 0 0 10px #000;
+      image-rendering: pixelated;
+    }
+    /* Preview canvases for Next and Held pieces */
+    canvas.preview {
+      background: #222;
+      border: 2px solid #555;
+      box-shadow: 0 0 5px #000;
+      image-rendering: pixelated;
+      display: block;
+      margin: 0 auto;
+    }
+    /* Pause overlay over the game canvas */
+    #pauseOverlay {
+      position: absolute;
+      width: 360px;
+      height: 660px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 48px;
+      pointer-events: none;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <!-- Sidebar with control information -->
+    <div id="sidebar">
+      <button id="startButton">Start</button>
+      <p><strong>Controls:</strong></p>
+      <ul>
+        <li><b>A</b> or <b>←</b>: Move Left</li>
+        <li><b>D</b> or <b>→</b>: Move Right</li>
+        <li><b>S</b> or <b>↓</b>: Drop Faster</li>
+        <li><b>W</b> or <b>↑</b>: Rotate Piece</li>
+        <li><b>Space</b>: Hard Drop</li>
+        <li><b>Z</b>: Swap Held Piece</li>
+        <li><b>Esc</b>: Toggle Pause</li>
+      </ul>
+      <p id="scoreDisplay">Score: 0</p>
+      <p><strong>Next Piece:</strong></p>
+      <canvas id="nextCanvas" class="preview"></canvas>
+      <p><strong>Held Piece:</strong></p>
+      <canvas id="holdCanvas" class="preview"></canvas>
+    </div>
+    <!-- Main play area -->
+    <div id="main">
+      <!-- Main Tetris playground: 12 columns x 22 rows (each cell is 30px) -->
+      <canvas id="gameCanvas"></canvas>
+      <!-- Pause overlay -->
+      <div id="pauseOverlay" style="display:none;">Paused</div>
+    </div>
+  </div>
+  
+  <!-- Audio file (make sure song1.mp3 is in the same folder) -->
+  <audio id="bgMusic" src="song1.mp3" loop></audio>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      /* -----------------------------
+         Intended Dimensions
+      ----------------------------- */
+      const MAIN_WIDTH = 360, MAIN_HEIGHT = 660;
+      const PREVIEW_SIZE = 120;
+      const cellSize = 30; // Size of a grid cell in the game board
+      
+      /* -----------------------------
+         Canvas Scaling for HiDPI Displays
+      ----------------------------- */
+      function adjustCanvasForHiDPI(canvas, context, width, height) {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = width + "px";
+        canvas.style.height = height + "px";
+        context.scale(dpr, dpr);
+      }
+      
+      /* -----------------------------
+         Global Variables & Constants
+      ----------------------------- */
+      const gameCanvas = document.getElementById('gameCanvas');
+      const ctx = gameCanvas.getContext('2d');
+      const nextCanvas = document.getElementById('nextCanvas');
+      const nextCtx = nextCanvas.getContext('2d');
+      const holdCanvas = document.getElementById('holdCanvas');
+      const holdCtx = holdCanvas.getContext('2d');
+      const pauseOverlay = document.getElementById('pauseOverlay');
+      const startButton = document.getElementById('startButton');
+      const scoreDisplay = document.getElementById('scoreDisplay');
+      const bgMusic = document.getElementById('bgMusic');
+
+      // Adjust canvases with the intended dimensions
+      adjustCanvasForHiDPI(gameCanvas, ctx, MAIN_WIDTH, MAIN_HEIGHT);
+      adjustCanvasForHiDPI(nextCanvas, nextCtx, PREVIEW_SIZE, PREVIEW_SIZE);
+      adjustCanvasForHiDPI(holdCanvas, holdCtx, PREVIEW_SIZE, PREVIEW_SIZE);
+      
+      let dropInterval = 800; // Initial drop interval (in milliseconds)
+      const ANIM_DURATION = 100; // Animation duration (in milliseconds)
+
+      // Game state variables
+      let board = [];
+      let currentPiece = null;
+      let nextPiece = null;
+      let heldPiece = null;
+      let swapped = false; // Allow only one swap per drop cycle
+      let score = 0;
+
+      // Timing and pause-related variables
+      let lastFrameTime = 0;
+      let dropAccumulator = 0;
+      let isPaused = false;
+      let pauseStartTime = 0;
+      let pausedTimeAccumulated = 0;
+
+      /* -----------------------------
+         Utility & Initialization Functions
+      ----------------------------- */
+      function initBoard() {
+        board = [];
+        const rows = MAIN_HEIGHT / cellSize;
+        const cols = MAIN_WIDTH / cellSize;
+        for (let y = 0; y < rows; y++) {
+          let row = [];
+          for (let x = 0; x < cols; x++) {
+            row.push(null);
+          }
+          board.push(row);
+        }
+      }
+
+      // Define tetromino shapes and colors (one base orientation)
+      const TETROMINOES = [
+        { name: 'I', coords: [[0,0],[1,0],[2,0],[3,0]], color: 'cyan' },
+        { name: 'J', coords: [[0,0],[0,1],[1,1],[2,1]], color: 'blue' },
+        { name: 'L', coords: [[2,0],[0,1],[1,1],[2,1]], color: 'orange' },
+        { name: 'O', coords: [[0,0],[1,0],[0,1],[1,1]], color: 'yellow' },
+        { name: 'S', coords: [[1,0],[2,0],[0,1],[1,1]], color: 'green' },
+        { name: 'T', coords: [[1,0],[0,1],[1,1],[2,1]], color: 'purple' },
+        { name: 'Z', coords: [[0,0],[1,0],[1,1],[2,1]], color: 'red' }
+      ];
+
+      function copyCoords(coords) {
+        return coords.map(coord => [...coord]);
+      }
+
+      function randomTetromino() {
+        const index = Math.floor(Math.random() * TETROMINOES.length);
+        const tetromino = TETROMINOES[index];
+        const maxX = Math.max(...tetromino.coords.map(b => b[0]));
+        const initialX = Math.floor(((MAIN_WIDTH / cellSize) - (maxX + 1)) / 2);
+        return {
+          name: tetromino.name,
+          coords: copyCoords(tetromino.coords),
+          color: tetromino.color,
+          x: initialX,
+          y: 0,
+          renderX: initialX * cellSize,
+          renderY: 0,
+          renderCoords: tetromino.coords.map(coord => [coord[0] * cellSize, coord[1] * cellSize]),
+          anim: null
+        };
+      }
+
+      function isValidPosition(piece, offsetX, offsetY, testCoords = null) {
+        const blocks = testCoords || piece.coords;
+        for (let block of blocks) {
+          const newX = piece.x + block[0] + offsetX;
+          const newY = piece.y + block[1] + offsetY;
+          const cols = MAIN_WIDTH / cellSize;
+          const rows = MAIN_HEIGHT / cellSize;
+          if (newX < 0 || newX >= cols || newY < 0 || newY >= rows) return false;
+          if (board[newY][newX] !== null) return false;
+        }
+        return true;
+      }
+
+      function lockPiece(piece) {
+        piece.coords.forEach(block => {
+          const x = piece.x + block[0];
+          const y = piece.y + block[1];
+          board[y][x] = piece.color;
+        });
+      }
+
+      function clearLines() {
+        let linesCleared = 0;
+        for (let y = board.length - 1; y >= 0; y--) {
+          if (board[y].every(cell => cell !== null)) {
+            board.splice(y, 1);
+            board.unshift(new Array(MAIN_WIDTH / cellSize).fill(null));
+            linesCleared++;
+            y++; // Recheck same row index after shifting
+          }
+        }
+        if (linesCleared > 0) {
+          score += 100 * linesCleared * linesCleared;
+          updateScoreDisplay();
+          updateSpeed();
+        }
+      }
+
+      function spawnPiece() {
+        currentPiece = nextPiece ? nextPiece : randomTetromino();
+        currentPiece.renderX = currentPiece.x * cellSize;
+        currentPiece.renderY = currentPiece.y * cellSize;
+        currentPiece.renderCoords = currentPiece.coords.map(coord => [coord[0] * cellSize, coord[1] * cellSize]);
+        currentPiece.anim = null;
+        nextPiece = randomTetromino();
+        swapped = false;
+        if (!isValidPosition(currentPiece, 0, 0)) {
+          alert("Game Over! Your score was: " + score);
+          currentPiece = null;
+        }
+      }
+
+      function updateScoreDisplay() {
+        scoreDisplay.innerText = "Score: " + score;
+      }
+
+      function updateSpeed() {
+        const newInterval = Math.max(100, 800 - Math.floor(score / 500) * 50);
+        if (newInterval !== dropInterval) dropInterval = newInterval;
+      }
+
+      /* -----------------------------
+         Animation Helpers
+      ----------------------------- */
+      function startAnimation(piece, newX, newY, newCoords) {
+        let now = performance.now() - pausedTimeAccumulated;
+        if (piece.anim) {
+          let progress = Math.min(1, (now - piece.anim.startTime) / piece.anim.duration);
+          piece.renderX = piece.anim.fromX + (piece.anim.toX - piece.anim.fromX) * progress;
+          piece.renderY = piece.anim.fromY + (piece.anim.toY - piece.anim.fromY) * progress;
+          piece.renderCoords = piece.anim.fromCoords.map((from, i) => {
+            return [
+              from[0] + (piece.anim.toCoords[i][0] - from[0]) * progress,
+              from[1] + (piece.anim.toCoords[i][1] - from[1]) * progress
+            ];
+          });
+        }
+        piece.anim = {
+          startTime: now,
+          duration: ANIM_DURATION,
+          fromX: piece.renderX,
+          fromY: piece.renderY,
+          fromCoords: piece.renderCoords.map(coord => [coord[0], coord[1]]),
+          toX: newX * cellSize,
+          toY: newY * cellSize,
+          toCoords: newCoords.map(coord => [coord[0] * cellSize, coord[1] * cellSize])
+        };
+        piece.x = newX;
+        piece.y = newY;
+        piece.coords = copyCoords(newCoords);
+      }
+
+      /* -----------------------------
+         Movement & Rotation Functions (Animated)
+      ----------------------------- */
+      function moveDownAnimated() {
+        if (!currentPiece) return;
+        if (isValidPosition(currentPiece, 0, 1)) {
+          startAnimation(currentPiece, currentPiece.x, currentPiece.y + 1, currentPiece.coords);
+        } else {
+          lockPiece(currentPiece);
+          clearLines();
+          spawnPiece();
+        }
+      }
+
+      function moveLeftAnimated() {
+        if (!currentPiece) return;
+        if (isValidPosition(currentPiece, -1, 0)) {
+          startAnimation(currentPiece, currentPiece.x - 1, currentPiece.y, currentPiece.coords);
+        }
+      }
+
+      function moveRightAnimated() {
+        if (!currentPiece) return;
+        if (isValidPosition(currentPiece, 1, 0)) {
+          startAnimation(currentPiece, currentPiece.x + 1, currentPiece.y, currentPiece.coords);
+        }
+      }
+
+      function rotateCoords(coords) {
+        let rotated = coords.map(([x, y]) => [y, -x]);
+        let minX = Math.min(...rotated.map(p => p[0]));
+        let minY = Math.min(...rotated.map(p => p[1]));
+        return rotated.map(([x, y]) => [x - minX, y - minY]);
+      }
+
+      function rotateCurrentPieceAnimated() {
+        if (!currentPiece) return;
+        const newCoords = rotateCoords(currentPiece.coords);
+        if (isValidPosition(currentPiece, 0, 0, newCoords)) {
+          startAnimation(currentPiece, currentPiece.x, currentPiece.y, newCoords);
+        }
+      }
+
+      function holdSwapAnimated() {
+        if (!currentPiece || swapped) return;
+        if (heldPiece === null) {
+          heldPiece = currentPiece;
+          let newPiece = nextPiece;
+          newPiece.y = 0;
+          newPiece.renderY = 0;
+          newPiece.anim = null;
+          currentPiece = newPiece;
+          nextPiece = randomTetromino();
+        } else {
+          let temp = currentPiece;
+          currentPiece = heldPiece;
+          currentPiece.y = 0;
+          currentPiece.renderY = 0;
+          currentPiece.anim = null;
+          heldPiece = temp;
+        }
+        swapped = true;
+        startAnimation(currentPiece, currentPiece.x, 0, currentPiece.coords);
+      }
+
+      function hardDrop() {
+        if (!currentPiece) return;
+        // Move the piece down until it collides
+        while (isValidPosition(currentPiece, 0, 1)) {
+          currentPiece.y += 1;
+        }
+        // Instantly update the render position
+        currentPiece.renderY = currentPiece.y * cellSize;
+        // Lock the piece into the board, clear full lines, and spawn a new piece
+        lockPiece(currentPiece);
+        clearLines();
+        spawnPiece();
+      }
+
+      /* -----------------------------
+         Pause Logic
+      ----------------------------- */
+      function togglePause() {
+        if (!isPaused) {
+          isPaused = true;
+          pauseOverlay.style.display = "flex";
+          pauseStartTime = performance.now();
+        } else {
+          isPaused = false;
+          pauseOverlay.style.display = "none";
+          pausedTimeAccumulated += performance.now() - pauseStartTime;
+          lastFrameTime = performance.now();
+        }
+      }
+
+      /* -----------------------------
+         Rendering Functions
+      ----------------------------- */
+      function drawBoard() {
+        ctx.clearRect(0, 0, MAIN_WIDTH, MAIN_HEIGHT);
+        ctx.fillStyle = '#222';
+        ctx.fillRect(0, 0, MAIN_WIDTH, MAIN_HEIGHT);
+        for (let y = 0; y < board.length; y++) {
+          for (let x = 0; x < board[y].length; x++) {
+            if (board[y][x] !== null) {
+              ctx.fillStyle = board[y][x];
+              ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+              ctx.strokeStyle = '#000';
+              ctx.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+            }
+          }
+        }
+
+        if (currentPiece) {
+          // Calculate how far the piece can drop
+          let drop = 0;
+          while (isValidPosition(currentPiece, 0, drop + 1)) {
+            drop++;
+          }
+          
+          // Draw the ghost piece using a translucent effect
+          ctx.save();
+          ctx.globalAlpha = 0.3;  // Set transparency for the ghost
+          currentPiece.coords.forEach(block => {
+            const ghostX = (currentPiece.x + block[0]) * cellSize;
+            const ghostY = (currentPiece.y + block[1] + drop) * cellSize;
+            ctx.fillStyle = currentPiece.color;
+            ctx.fillRect(ghostX, ghostY, cellSize, cellSize);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(ghostX, ghostY, cellSize, cellSize);
+          });
+          ctx.restore();
+        }
+
+        if (currentPiece) {
+          if (currentPiece.anim) {
+            let now = performance.now() - pausedTimeAccumulated;
+            let progress = (now - currentPiece.anim.startTime) / currentPiece.anim.duration;
+            if (progress >= 1) {
+              currentPiece.renderX = currentPiece.anim.toX;
+              currentPiece.renderY = currentPiece.anim.toY;
+              currentPiece.renderCoords = currentPiece.anim.toCoords;
+              currentPiece.anim = null;
+            } else {
+              currentPiece.renderX = currentPiece.anim.fromX + (currentPiece.anim.toX - currentPiece.anim.fromX) * progress;
+              currentPiece.renderY = currentPiece.anim.fromY + (currentPiece.anim.toY - currentPiece.anim.fromY) * progress;
+              currentPiece.renderCoords = currentPiece.anim.fromCoords.map((from, i) => {
+                return [
+                  from[0] + (currentPiece.anim.toCoords[i][0] - from[0]) * progress,
+                  from[1] + (currentPiece.anim.toCoords[i][1] - from[1]) * progress
+                ];
+              });
+            }
+          }
+          currentPiece.coords.forEach((block, i) => {
+            const drawX = currentPiece.renderX + currentPiece.renderCoords[i][0];
+            const drawY = currentPiece.renderY + currentPiece.renderCoords[i][1];
+            ctx.fillStyle = currentPiece.color;
+            ctx.fillRect(drawX, drawY, cellSize, cellSize);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(drawX, drawY, cellSize, cellSize);
+          });
+        }
+      }
+
+      function drawNext() {
+        nextCtx.clearRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+        nextCtx.fillStyle = '#222';
+        nextCtx.fillRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+        if (nextPiece) {
+          const xs = nextPiece.coords.map(b => b[0]);
+          const ys = nextPiece.coords.map(b => b[1]);
+          const minX = Math.min(...xs), minY = Math.min(...ys);
+          const maxX = Math.max(...xs), maxY = Math.max(...ys);
+          const pieceWidth = (maxX - minX + 1) * cellSize;
+          const pieceHeight = (maxY - minY + 1) * cellSize;
+          const offsetX = (PREVIEW_SIZE - pieceWidth) / 2;
+          const offsetY = (PREVIEW_SIZE - pieceHeight) / 2;
+          nextPiece.coords.forEach(block => {
+            const drawX = offsetX + (block[0] - minX) * cellSize;
+            const drawY = offsetY + (block[1] - minY) * cellSize;
+            nextCtx.fillStyle = nextPiece.color;
+            nextCtx.fillRect(drawX, drawY, cellSize, cellSize);
+            nextCtx.strokeStyle = '#000';
+            nextCtx.strokeRect(drawX, drawY, cellSize, cellSize);
+          });
+        }
+      }
+
+      function drawHold() {
+        holdCtx.clearRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+        holdCtx.fillStyle = '#222';
+        holdCtx.fillRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+        if (heldPiece) {
+          const xs = heldPiece.coords.map(b => b[0]);
+          const ys = heldPiece.coords.map(b => b[1]);
+          const minX = Math.min(...xs), minY = Math.min(...ys);
+          const maxX = Math.max(...xs), maxY = Math.max(...ys);
+          const pieceWidth = (maxX - minX + 1) * cellSize;
+          const pieceHeight = (maxY - minY + 1) * cellSize;
+          const offsetX = (PREVIEW_SIZE - pieceWidth) / 2;
+          const offsetY = (PREVIEW_SIZE - pieceHeight) / 2;
+          heldPiece.coords.forEach(block => {
+            const drawX = offsetX + (block[0] - minX) * cellSize;
+            const drawY = offsetY + (block[1] - minY) * cellSize;
+            holdCtx.fillStyle = heldPiece.color;
+            holdCtx.fillRect(drawX, drawY, cellSize, cellSize);
+            holdCtx.strokeStyle = '#000';
+            holdCtx.strokeRect(drawX, drawY, cellSize, cellSize);
+          });
+        }
+      }
+
+      /* -----------------------------
+         Main Game Loop using requestAnimationFrame
+      ----------------------------- */
+      function mainLoop(time) {
+        if (!lastFrameTime) lastFrameTime = time;
+        let delta = time - lastFrameTime;
+        lastFrameTime = time;
+        if (!isPaused) {
+          dropAccumulator += delta;
+          while (dropAccumulator > dropInterval) {
+            moveDownAnimated();
+            dropAccumulator -= dropInterval;
+          }
+        }
+        drawBoard();
+        drawNext();
+        drawHold();
+        requestAnimationFrame(mainLoop);
+      }
+
+      /* -----------------------------
+         Start / Restart Game Function
+      ----------------------------- */
+      function startGame() {
+        initBoard();
+        score = 0;
+        dropInterval = 800;
+        updateScoreDisplay();
+        currentPiece = null;
+        nextPiece = null;
+        heldPiece = null;
+        swapped = false;
+        pausedTimeAccumulated = 0;
+        isPaused = false;
+        pauseOverlay.style.display = "none";
+        dropAccumulator = 0;
+        spawnPiece();
+        nextPiece = randomTetromino();
+        bgMusic.currentTime = 0;
+        bgMusic.play().catch(() => {});
+        lastFrameTime = performance.now();
+        requestAnimationFrame(mainLoop);
+      }
+
+      /* -----------------------------
+         Key Bindings (WSAD & Arrow Keys)
+      ----------------------------- */
+      document.addEventListener('keydown', function(e) {
+        if (!currentPiece) return;
+        switch (e.key) {
+          case 'a':
+          case 'A':
+          case 'ArrowLeft':
+            moveLeftAnimated();
+            break;
+          case 'd':
+          case 'D':
+          case 'ArrowRight':
+            moveRightAnimated();
+            break;
+          case 's':
+          case 'S':
+          case 'ArrowDown':
+            moveDownAnimated();
+            break;
+          case 'w':
+          case 'W':
+          case 'ArrowUp':
+            rotateCurrentPieceAnimated();
+            break;
+          case ' ':
+            hardDrop();
+            break;
+          case 'z':
+          case 'Z':
+            holdSwapAnimated();
+            break;
+          case 'Escape':
+            togglePause();
+            break;
+        }
+      });
+
+      startButton.addEventListener('click', function() {
+        startGame();
+        startButton.blur(); // Remove focus from the button
+      });
+    });
+  </script>
+</body>
+</html>
